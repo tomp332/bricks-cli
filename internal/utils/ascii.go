@@ -1,5 +1,6 @@
 package utils
 
+// MainArt - Main ASCII art for the CLI
 var MainArt = `
 		  ____       _      _           _____ _      _____
 		 |  _ \     (_)    | |         / ____| |    |_   _|
@@ -34,6 +35,7 @@ var MainArt = `
                                 .-::-.            -:
 	`
 
+// SuccessAscii - Success ASCII to add to the ASCII art.
 var SuccessAscii = `
                                                                                            
  #                      #                   ###                                            
