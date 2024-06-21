@@ -43,17 +43,15 @@ bricks-cli logout
 
 
 
-#### Steup 1
+### Steup 1
 
 In order for these commands to work properly,
-
 0Auth application configuration is needed in your current Github user settings.
 
 Tutorial to create a new app can be found [here](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app).
 
 
-
-#### Step 2
+### Step 2
 
 Create a config.json file to pass the correct Github application data needed for authentication.
 
@@ -69,17 +67,30 @@ Create a config.json file to pass the correct Github application data needed for
 
 After this file is created, you can work with the CLI commands as expected, without passing any additional flags.
 
-#### Step 3
+### Step 3
+
+Use the `login` command to execute the authentication.
 
 ```shell
 ./dist/bricks-cli login
 ```
 
-##### Output
+
+> **_NOTE:_**  Authentication can also be preformed with the following CLI flags:
+> ```shell
+> # The CLIENT_SECRET will be prompted for input after executing this command.
+> ./dist/bricks-cli login --client-id <GITHUB_CLIENT_ID>
+
+
+
+### Step 4
+
+The following displays a successful authentication process.
+
 ![img.png](docs/images/login.png)
 
 
-### Demos
+## Demos
 
 ![demo](docs/gifs/demo.gif)
 
