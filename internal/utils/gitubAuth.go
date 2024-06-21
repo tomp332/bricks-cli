@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/enescakir/emoji"
+	"github.com/go-playground/validator/v10"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/github"
 	"net/http"
@@ -21,8 +22,9 @@ var oauth2Config *oauth2.Config
 var httpClient *http.Client
 
 type GitHubUser struct {
-	Username string `json:"user_name"`
-	Token    string `json:"access_token"`
+	Username string `json:"user_name" validate:"required"`
+	Token    string `json:"access_token" validate:"required"`
+	ClientId string `json:"client_id" validate:"required"`
 }
 
 // User represents the GitHub user data
@@ -77,53 +79,29 @@ func removeAuthInfo() error {
 }
 
 // loadAuthToken loads the github auth Token from the local file.
-func loadAuthToken() {
-	file, err := os.Open(Settings.GitHubAuthConfig.AuthFilePath)
+func loadAuthToken() error {
+	// Read the JSON file
+	data, err := os.ReadFile(Settings.GitHubAuthConfig.AuthFilePath)
 	if err != nil {
-		githubUser.Token = ""
-		return
+		return &CustomError{Code: AuthFileNotExistsError, Message: "file not found"}
 	}
-	defer file.Close()
-	var t GitHubUser
-	decoder := json.NewDecoder(file)
-	err = decoder.Decode(&t)
-	if err != nil {
-		githubUser.Token = ""
-		return
+
+	// Unmarshal the JSON into a Config struct
+	if err := json.Unmarshal(data, &githubUser); err != nil {
+		return &CustomError{Code: AuthFileNotValidJsonError, Message: "invalid json context in auth file."}
 	}
-	githubUser = t
+
+	// Validate the Config struct
+	validate := validator.New()
+	if err := validate.Struct(githubUser); err != nil {
+		return &CustomError{Code: AuthFileInvalidError, Message: "invalid user auth data"}
+	}
+	return nil
 }
 
-// CheckLoginStatus checks if the current authentication Token is valid.
+// setupCallbackLogic - Creates an HTTP endpoint that receives the 0Auth callback after authentication.
 // Returns:
-// - bool: true if the authentication Token is valid, false otherwise.
-func CheckLoginStatus() bool {
-	loadAuthToken()
-	if githubUser.Token == "" {
-		return false
-	}
-	// Validate Token with GitHub
-	req, err := http.NewRequest("GET", "https://api.github.com/user", nil)
-	if err != nil {
-		FatalPrint("Error validating current authentication Token, error: %v\n", err)
-		return false
-	}
-	req.Header.Set("Authorization", "Bearer "+githubUser.Token)
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		FatalPrint("Error validating current authentication Token, error: %v\n", err)
-	}
-	defer resp.Body.Close()
-
-	// Check if the Token is still valid
-	if resp.StatusCode != http.StatusOK {
-		ErrorPrint("Failed to validate current user's authentication status: %v\n", resp.StatusCode)
-		return false
-	}
-	return true
-}
-
+// - chan int: Go routine channel that signals the authentication status.
 func setupCallbackLogic(authState string) chan int {
 	callbackChannel := make(chan int)
 	http.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
@@ -144,6 +122,7 @@ func setupCallbackLogic(authState string) chan int {
 			FatalPrint("Failed to fetch GitHub user info")
 		}
 		githubUser.Username = username
+		githubUser.ClientId = Settings.GitHubAuthConfig.GitHubClientID
 		err = saveAuthInfo()
 		// Send ascii art payload as web response
 		_, err = w.Write([]byte(MainArt + SuccessAscii))
@@ -154,45 +133,6 @@ func setupCallbackLogic(authState string) chan int {
 		close(callbackChannel)
 	})
 	return callbackChannel
-}
-
-// PerformLogin initiates the OAuth 2.0 login process by opening the user's browser to GitHub's
-// authorization URL and starting a local HTTP server to handle the OAuth callback.
-// Returns:
-// - error: Returns an error if any step in the login process fails.
-func PerformLogin() error {
-	initOAuthConfig()
-
-	state, err := generateStateParam()
-	if err != nil {
-		return fmt.Errorf("failed to generate state: %w", err)
-	}
-	authURL := oauth2Config.AuthCodeURL(state, oauth2.AccessTypeOffline)
-	openBrowser(authURL)
-	callbackChannel := setupCallbackLogic(state)
-	InfoPrint("Please login to your Github account using the opened browser window")
-
-	// Start the server in a goroutine
-	server := &http.Server{Addr: fmt.Sprintf(":%d", Settings.GitHubAuthConfig.ServerPort)}
-	go func() {
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			fmt.Printf("Error starting server: %v\n", err)
-			close(callbackChannel) // Signal completion on error as well
-		}
-	}()
-	// Create a timeout channel
-	timeout := time.After(time.Duration(Settings.GitHubAuthConfig.CallbackTimeout) * time.Second)
-
-	// Wait for either the callback or the timeout
-	select {
-	case <-callbackChannel:
-		SuccessPrint("Welcome, %s you have been authenticated!\n", githubUser.Username)
-	case <-timeout:
-		server.Close() // Stop the server
-		ErrorPrint("Timeout waiting for Github authentication, exiting..")
-		os.Exit(1)
-	}
-	return nil
 }
 
 func getGitHubUsername() (string, error) {
@@ -229,6 +169,44 @@ func generateStateParam() (string, error) {
 		return "", err
 	}
 	return base64.URLEncoding.EncodeToString(b), nil
+}
+
+// PerformLogin initiates the OAuth 2.0 login process by opening the user's browser to GitHub's
+// authorization URL and starting a local HTTP server to handle the OAuth callback.
+// Returns:
+// - error: Returns an error if any step in the login process fails.
+func PerformLogin() error {
+	initOAuthConfig()
+	state, err := generateStateParam()
+	if err != nil {
+		return fmt.Errorf("failed to generate state: %w", err)
+	}
+	authURL := oauth2Config.AuthCodeURL(state, oauth2.AccessTypeOffline)
+	openBrowser(authURL)
+	callbackChannel := setupCallbackLogic(state)
+	InfoPrint("Please login to your Github account using the opened browser window")
+
+	// Start the server in a goroutine
+	server := &http.Server{Addr: fmt.Sprintf(":%d", Settings.GitHubAuthConfig.ServerPort)}
+	go func() {
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			fmt.Printf("Error starting server: %v\n", err)
+			close(callbackChannel) // Signal completion on error as well
+		}
+	}()
+	// Create a timeout channel
+	timeout := time.After(time.Duration(Settings.GitHubAuthConfig.CallbackTimeout) * time.Second)
+
+	// Wait for either the callback or the timeout
+	select {
+	case <-callbackChannel:
+		SuccessPrint("Welcome, %s you have been authenticated!\n", githubUser.Username)
+	case <-timeout:
+		server.Close() // Stop the server
+		ErrorPrint("Timeout waiting for Github authentication, exiting.. %v", emoji.SadButRelievedFace)
+		os.Exit(1)
+	}
+	return nil
 }
 
 func Logout() {
@@ -271,4 +249,38 @@ func Logout() {
 		ErrorPrint("Failed to remove authentication file: %s", err.Error())
 	}
 	SuccessPrint("Successfully logged out %v", emoji.Hamburger)
+}
+
+// CheckLoginStatus checks if the current authentication Token is valid.
+// Returns:
+// - bool: true if the authentication Token is valid, false otherwise.
+func CheckLoginStatus() bool {
+	err := loadAuthToken()
+	if err != nil {
+		return false
+	}
+	// This means that a valid auth token has been loaded.
+	if githubUser.Token == "" {
+		return false
+	}
+	// Validate Token with GitHub
+	req, err := http.NewRequest("GET", "https://api.github.com/user", nil)
+	if err != nil {
+		FatalPrint("Error validating current authentication Token, error: %v\n", err)
+		return false
+	}
+	req.Header.Set("Authorization", "Bearer "+githubUser.Token)
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		FatalPrint("Error validating current authentication Token, error: %v\n", err)
+	}
+	defer resp.Body.Close()
+
+	// Check if the Token is still valid
+	if resp.StatusCode != http.StatusOK {
+		ErrorPrint("Failed to validate current user's authentication status: %v\n", resp.StatusCode)
+		return false
+	}
+	return true
 }
